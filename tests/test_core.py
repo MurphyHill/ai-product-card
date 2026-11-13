@@ -124,10 +124,25 @@ def test_unit_conversion_is_flagged():
 
 # ---------- проверка ответа модели ----------
 
+GOOD_DESC = (
+    "Показывающий манометр предназначен для контроля избыточного давления жидкостей и газов. "
+    "Прибор выполнен в стальном корпусе и устанавливается на трубопровод через резьбовое присоединение. "
+    "Шкала хорошо читается с рабочего места оператора, а стрелка движется плавно.\n\n"
+    "Манометр применяют в системах водоснабжения, на тепловых пунктах и в котельных. "
+    "Его ставят на насосных станциях, в сетях отопления и на технологическом оборудовании. "
+    "Монтаж выполняется гаечным ключом за штуцер без усилия на корпус.\n\n"
+    "Перед установкой проверяют совпадение резьбы и отсутствие давления в линии. "
+    "При пульсирующем давлении рекомендуется демпфер, а при горячей среде — отвод-охладитель. "
+    "Корпус не требует обслуживания, стекло протирают мягкой тканью без растворителей.\n\n"
+    "Поверку проводят в аккредитованной лаборатории, отметку ставят в паспорте прибора. "
+    "Хранить манометр следует в упаковке, в сухом помещении без агрессивных паров."
+)
+
+
 def _good_answer(**over):
     a = {
         "seo_title": "Манометр показывающий DM 02 Манотомь 0–1,6 МПа",
-        "seo_description": "Манометр для измерения избыточного давления. " * 22,
+        "seo_description": GOOD_DESC,
         "search_queries": ["купить манометр DM 02", "манометр 0–1,6 МПа", "манометр Манотомь"],
         "commercial_block": "Подходит для систем водоснабжения.",
     }
@@ -362,3 +377,50 @@ def test_broken_model_json_is_retried(monkeypatch):
     card = generate_card(MANOMETR)
     assert card.seo_title and calls["n"] == 2
     assert "оборванный JSON" in card.attempt_log[0]
+
+
+def test_feed_download_sends_user_agent(tmp_path, monkeypatch):
+    # без User-Agent сайт отвечает 403 — нашлось при проверке «с нуля»
+    from app import feed
+    seen = {}
+
+    class FakeResp:
+        status_code = 200
+
+        def iter_bytes(self):
+            yield FEED.encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_stream(method, url, **kw):
+        seen.update(kw.get("headers") or {})
+        return FakeResp()
+
+    monkeypatch.setattr(feed, "CACHE", tmp_path / "feed.xml")
+    monkeypatch.setattr(feed.httpx, "stream", fake_stream)
+    assert feed.find_offer("205786")["vendor"] == "Манотомь"
+    assert "User-Agent" in seen and "python" not in seen["User-Agent"].lower()
+
+
+def test_repeated_sentences_detected_and_removed():
+    from app.generator import _drop_repeated_sentences, _repeated_sentences
+    text = ("Манометр DM 02 предназначен для измерения избыточного давления.\n\n"
+            "Манометр DM 02 предназначен для измерения избыточного давления. Присоединение G1/2.")
+    assert _repeated_sentences(text) == ["Манометр DM 02 предназначен для измерения избыточного давления."]
+    cleaned = _drop_repeated_sentences(text)
+    assert cleaned.count("предназначен") == 1 and "G1/2" in cleaned
+
+
+def test_paraphrased_repeat_detected():
+    # реальный повтор модели из примера 03: та же мысль другими словами
+    from app.generator import _repeated_sentences
+    text = ("Манометр показывающий DM 02 предназначен для измерения избыточного давления в диапазоне "
+            "0–1,6 МПа с классом точности 1,5. Присоединение G1/2 и диаметр корпуса 100 мм.\n\n"
+            "Прибор предназначен для измерения избыточного давления в диапазоне 0–1,6 МПа с классом "
+            "точности 1,5 и присоединением G1/2.")
+    assert len(_repeated_sentences(text)) == 1
+    assert _repeated_sentences(GOOD_DESC) == []

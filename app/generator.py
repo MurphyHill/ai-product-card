@@ -118,6 +118,13 @@ def check_answer(answer: dict, product: ProductInput, sparse: bool = False) -> l
         problems.append(Problem("style", "Рекламные штампы: " + ", ".join(cliches),
                                 "Убери рекламные штампы: " + ", ".join(cliches) + ". Пиши по-деловому."))
 
+    repeated = _repeated_sentences(desc)
+    if repeated:
+        problems.append(Problem(
+            "style", "В описании повторяются предложения",
+            "В seo_description одно и то же сказано дважды. Убери повторы — каждое предложение должно быть "
+            "один раз:\n" + "\n".join(f"  «{s}»" for s in repeated)))
+
     invented = invented_numbers(all_text, product)
     if invented:
         problems.append(Problem(
@@ -142,6 +149,64 @@ def check_answer(answer: dict, product: ProductInput, sparse: bool = False) -> l
             "сам код (например «Степень защиты — IP40, по заказу — IP54.»), без слов о пыли, воде и влаге:\n"
             + "\n".join(f"  «{s}»" for s in sentences)))
     return problems
+
+
+def _split_sentences(text: str) -> list[str]:
+    import re
+
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", text) if s.strip()]
+
+
+def _norm_sentence(s: str) -> str:
+    import re
+
+    return re.sub(r"[^\w]+", " ", s.lower()).strip()
+
+
+def _is_repeat(key: str, seen: list[str]) -> bool:
+    """Предложение повторяет уже сказанное — дословно или почти теми же словами.
+
+    Сравниваем наборы слов: доля общих слов от меньшего предложения. «Манометр DM 02
+    предназначен для измерения давления в диапазоне 0–1,6 МПа» и «Прибор предназначен
+    для измерения давления в диапазоне 0–1,6 МПа» — это повтор (0,79), хотя строки разные.
+    Порог 0,7 подобран на примерах: в нормальных карточках похожесть не выше 0,43.
+    """
+    words = set(key.split())
+    if len(words) < 5:
+        return False
+    for other in seen:
+        ow = set(other.split())
+        if len(ow) >= 5 and len(words & ow) / min(len(words), len(ow)) >= 0.7:
+            return True
+    return False
+
+
+def _repeated_sentences(text: str) -> list[str]:
+    seen: list[str] = []
+    repeated: list[str] = []
+    for s in _split_sentences(text):
+        key = _norm_sentence(s)
+        if _is_repeat(key, seen) and s not in repeated:
+            repeated.append(s)
+        seen.append(key)
+    return repeated
+
+
+def _drop_repeated_sentences(text: str) -> str:
+    """Запасной вариант, если модель так и не убрала повторы: оставляем первое вхождение."""
+    seen: list[str] = []
+    paragraphs = []
+    for para in text.split("\n\n"):
+        kept = []
+        for s in _split_sentences(para):
+            key = _norm_sentence(s)
+            if _is_repeat(key, seen):
+                continue
+            seen.append(key)
+            kept.append(s)
+        if kept:
+            paragraphs.append(" ".join(kept))
+    return "\n\n".join(paragraphs)
 
 
 def _sentences_with(text: str, phrases: list[str]) -> list[str]:
@@ -225,6 +290,10 @@ def _assemble(answer: dict, problems: list[Problem], product: ProductInput,
     queries = queries[:QUERIES_MAX]
 
     desc = str(answer.get("seo_description") or "").strip()
+    if _repeated_sentences(desc):
+        desc = _drop_repeated_sentences(desc)
+        problems = [p for p in problems if p.what != "В описании повторяются предложения"]
+        warnings.append("Модель повторила предложения — повторы убраны автоматически.")
     if len(desc) > DESC_MAX:
         trimmed, removed = _drop_paragraph_to_fit(desc)
         if removed is not None:

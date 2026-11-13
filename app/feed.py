@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 
-from .importer import ImportError_, _ssl_context, fetch_product
+from .importer import USER_AGENT, ImportError_, _ssl_context, fetch_product
 from .schemas import ProductInput
 
 FEED_URL = "https://www.souz-pribor.ru/yml/any/feed.xml"
@@ -28,7 +28,9 @@ def _feed_path() -> Path:
     CACHE.parent.mkdir(exist_ok=True)
     tmp = CACHE.with_suffix(".part")
     try:
-        with httpx.stream("GET", FEED_URL, timeout=120, follow_redirects=True, verify=_ssl_context()) as r:
+        # Без User-Agent сайт отвечает 403 на запросы от python-httpx.
+        with httpx.stream("GET", FEED_URL, timeout=120, follow_redirects=True, verify=_ssl_context(),
+                          headers={"User-Agent": USER_AGENT}) as r:
             if r.status_code != 200:
                 raise ImportError_(f"Фид вернул код {r.status_code}")
             with tmp.open("wb") as f:

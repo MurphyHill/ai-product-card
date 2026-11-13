@@ -15,6 +15,8 @@ from lxml import html
 from .schemas import ProductInput
 
 ALLOWED_HOSTS = {"souz-pribor.ru", "www.souz-pribor.ru"}
+# Сайт отвечает 403 на запросы со стандартным User-Agent библиотек, поэтому представляемся явно.
+USER_AGENT = "Mozilla/5.0 (product-card-prototype)"
 # Символов описания, которые отдаём модели. Главное (назначение, применение, параметры)
 # на страницах стоит в начале, а в хвосте — монтаж и эксплуатация. Длиннее — модель на
 # процессоре заметно дольше читает вход, а качество не растёт.
@@ -29,11 +31,18 @@ def fetch_product(url: str) -> ProductInput:
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"http", "https"} or parsed.hostname not in ALLOWED_HOSTS:
         raise ImportError_("Поддерживаются только ссылки на товары souz-pribor.ru")
-    try:
-        resp = httpx.get(url, timeout=30, follow_redirects=True, verify=_ssl_context(),
-                         headers={"User-Agent": "Mozilla/5.0 (product-card-prototype)"})
-    except httpx.HTTPError as e:
-        raise ImportError_(f"Не удалось загрузить страницу: {e}") from e
+    resp = None
+    for attempt in range(3):  # временные сбои сети (таймаут, обрыв) — пробуем ещё раз
+        try:
+            resp = httpx.get(url, timeout=30, follow_redirects=True, verify=_ssl_context(),
+                             headers={"User-Agent": USER_AGENT})
+            break
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            if attempt == 2:
+                raise ImportError_(f"Не удалось загрузить страницу (сеть): {e}") from e
+        except httpx.HTTPError as e:
+            raise ImportError_(f"Не удалось загрузить страницу: {e}") from e
+    assert resp is not None
     if resp.status_code != 200:
         raise ImportError_(f"Страница вернула код {resp.status_code}")
     return parse_product_page(resp.text, url)
