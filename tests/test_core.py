@@ -180,6 +180,33 @@ def test_retry_fixes_invented_numbers(monkeypatch):
     assert "65" in calls[1][-1]["content"]
 
 
+def test_llm_failure_on_retry_keeps_best_answer(monkeypatch):
+    from app.llm import LLMError
+    calls = {"n": 0}
+
+    def flaky(messages, schema):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _good_answer(commercial_block="IP65")  # есть ошибка → будет повтор
+        raise LLMError("Ollama недоступна")
+
+    monkeypatch.setattr(generator, "chat_json", flaky)
+    card = generate_card(MANOMETR)  # не падает
+    assert card.seo_title
+    assert any("ошибка модели" in line for line in card.attempt_log)
+
+
+def test_llm_failure_on_first_attempt_is_raised(monkeypatch):
+    from app.llm import LLMError
+
+    def down(messages, schema):
+        raise LLMError("Ollama недоступна")
+
+    monkeypatch.setattr(generator, "chat_json", down)
+    with pytest.raises(LLMError):
+        generate_card(MANOMETR)
+
+
 def test_unfixable_answer_ends_with_warnings(monkeypatch):
     monkeypatch.setattr(generator, "chat_json", lambda m, s: _good_answer(commercial_block="IP65"))
     card = generate_card(MANOMETR)

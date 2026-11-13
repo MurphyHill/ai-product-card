@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from .config import settings
 from .factcheck import decoded_claims, invented_numbers, misattributed_numbers
-from .llm import chat_json
+from .llm import LLMError, chat_json
 from .prompts import RESPONSE_SCHEMA, SYSTEM_PROMPT, build_fix_prompt, build_user_prompt
 from .schemas import (
     DESC_MAX,
@@ -150,7 +150,15 @@ def generate_card(product: ProductInput) -> ProductCard:
     log: list[str] = []
     attempts = 0
     for attempts in range(1, settings.max_attempts + 1):
-        raw = chat_json(messages, RESPONSE_SCHEMA)
+        try:
+            raw = chat_json(messages, RESPONSE_SCHEMA)
+        except LLMError as e:
+            if best is None:
+                raise  # ни одного ответа — показываем ошибку пользователю
+            # Ответ уже есть, сломалась только попытка исправления — отдаём лучший вариант.
+            log.append(f"попытка {attempts}: ошибка модели ({e}); оставлен лучший из полученных вариантов")
+            attempts -= 1
+            break
         answer = normalize(raw)
         problems = check_answer(answer, product, sparse)
         log.append(f"попытка {attempts}: " + ("; ".join(p.what for p in problems) if problems else "ок"))
