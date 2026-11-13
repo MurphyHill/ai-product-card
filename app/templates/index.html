@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Карточки товаров</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#677084; --line:#dde1e8;
+          --accent:#353c75; --warn-bg:#fff6e0; --warn:#8a5a00; --err-bg:#fdecec; --err:#a12626; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  header { background:var(--accent); color:#fff; padding:14px 24px; }
+  header h1 { margin:0; font-size:18px; font-weight:600; }
+  header p { margin:2px 0 0; opacity:.8; font-size:13px; }
+  main { display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1.2fr); gap:20px; padding:20px 24px; max-width:1400px; margin:0 auto; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding:16px; } }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  h2 { font-size:15px; margin:0 0 10px; }
+  label { font-size:13px; color:var(--muted); display:block; margin-bottom:4px; }
+  input[type=url], textarea { width:100%; border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:13px/1.45 ui-monospace, Consolas, monospace; }
+  textarea { min-height:420px; resize:vertical; }
+  .row { display:flex; gap:8px; margin-bottom:12px; }
+  .row input { flex:1; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:8px 14px; font-size:14px; cursor:pointer; }
+  button.secondary { background:#e9ebf2; color:var(--text); }
+  button:disabled { opacity:.5; cursor:wait; }
+  .status { font-size:13px; color:var(--muted); margin-top:8px; min-height:20px; }
+  .box { border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:14px; }
+  .box.warn { background:var(--warn-bg); color:var(--warn); }
+  .box.err { background:var(--err-bg); color:var(--err); }
+  .box ul { margin:4px 0 0; padding-left:18px; }
+  .field { margin-bottom:16px; }
+  .field-head { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .field-head h3 { font-size:13px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); margin:0; }
+  .meta { font-size:12px; color:var(--muted); }
+  .val { white-space:pre-wrap; background:#fafbfc; border:1px solid var(--line); border-radius:8px; padding:10px; margin-top:4px; }
+  table { width:100%; border-collapse:collapse; margin-top:4px; font-size:14px; }
+  td { border-bottom:1px solid var(--line); padding:6px 8px; vertical-align:top; }
+  td:first-child { color:var(--muted); width:45%; }
+  .nodata { color:var(--err); font-weight:600; }
+  .copy { font-size:12px; padding:3px 8px; }
+  .empty { color:var(--muted); font-size:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI-помощник: черновик карточки товара</h1>
+  <p>Локальная модель: {{ model }} · характеристики берутся только из входных данных</p>
+</header>
+<main>
+  <section>
+    <h2>Данные о товаре</h2>
+    <label for="url">Загрузить со страницы souz-pribor.ru (необязательно)</label>
+    <div class="row">
+      <input type="url" id="url" placeholder="https://www.souz-pribor.ru/product/mp3-u/">
+      <button class="secondary" id="importBtn">Загрузить</button>
+    </div>
+    <label for="input">JSON: name, manufacturer, specs, description</label>
+    <textarea id="input" spellcheck="false">{{ example }}</textarea>
+    <div class="row" style="margin-top:12px">
+      <button id="genBtn">Сформировать карточку</button>
+    </div>
+    <div class="status" id="status"></div>
+  </section>
+
+  <section id="result">
+    <h2>Результат</h2>
+    <p class="empty">Здесь появится черновик карточки. На локальной модели без видеокарты это занимает 2–10 минут.</p>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let lastMarkdown = "";
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function field(title, text, meta) {
+  return `<div class="field"><div class="field-head"><h3>${title}</h3>
+    <span><span class="meta">${meta || ""}</span>
+    <button class="secondary copy" data-copy="${esc(text)}">Копировать</button></span></div>
+    <div class="val">${esc(text)}</div></div>`;
+}
+
+function render(data) {
+  const c = data.card;
+  let h = `<div class="field-head" style="margin-bottom:10px"><h2>Результат</h2>
+    <button class="secondary copy" id="copyMd">Копировать всё (Markdown)</button></div>`;
+  if (c.warnings.length) h += `<div class="box warn"><b>Проверить перед публикацией:</b><ul>${c.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul></div>`;
+  h += field("SEO-заголовок", c.seo_title, `${c.seo_title.length} / 70`);
+  h += field("SEO-описание", c.seo_description, `${c.seo_description.length} симв. (нужно 800–1200)`);
+  h += `<div class="field"><div class="field-head"><h3>Ключевые характеристики</h3></div><table>` +
+       c.key_specs.map(s => `<tr><td>${esc(s.name)}</td><td class="${s.from_input ? "" : "nodata"}">${esc(s.value)}</td></tr>`).join("") +
+       `</table></div>`;
+  h += field("Поисковые запросы", c.search_queries.join("\n"));
+  h += field("Для менеджера", c.commercial_block);
+  if (c.missing_fields.length) h += `<div class="box warn"><b>Не хватает во входных данных:</b><ul>${c.missing_fields.map(m => `<li>${esc(m)}</li>`).join("")}</ul></div>`;
+  h += `<p class="meta">Модель: ${esc(c.model)} · попыток: ${c.attempts}</p>`;
+  $("result").innerHTML = h;
+  lastMarkdown = data.markdown;
+}
+
+document.addEventListener("click", (e) => {
+  const t = e.target;
+  if (t.dataset && t.dataset.copy !== undefined) { navigator.clipboard.writeText(t.dataset.copy); t.textContent = "Скопировано"; }
+  if (t.id === "copyMd") { navigator.clipboard.writeText(lastMarkdown); t.textContent = "Скопировано"; }
+});
+
+$("importBtn").onclick = async () => {
+  const url = $("url").value.trim();
+  if (!url) return;
+  $("status").textContent = "Загружаю страницу…";
+  try {
+    const r = await fetch("/api/import", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({url})});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    $("input").value = JSON.stringify(d, null, 2);
+    $("status").textContent = "Данные загружены — проверьте и нажмите «Сформировать карточку».";
+  } catch (err) { $("status").textContent = "Ошибка: " + err.message; }
+};
+
+$("genBtn").onclick = async () => {
+  $("genBtn").disabled = true;
+  const started = Date.now();
+  const timer = setInterval(() => { $("status").textContent = `Модель пишет карточку… ${Math.round((Date.now() - started) / 1000)} с`; }, 1000);
+  try {
+    const r = await fetch("/api/card", {method: "POST", headers: {"Content-Type": "application/json"}, body: $("input").value});
+    const d = await r.json();
+    if (!r.ok) {
+      $("result").innerHTML = `<h2>Результат</h2><div class="box err">${esc(d.error || r.statusText)}</div>`;
+    } else { render(d); }
+    $("status").textContent = `Готово за ${Math.round((Date.now() - started) / 1000)} с`;
+  } catch (err) {
+    $("status").textContent = "Ошибка: " + err.message;
+  } finally { clearInterval(timer); $("genBtn").disabled = false; }
+};
+</script>
+</body>
+</html>
