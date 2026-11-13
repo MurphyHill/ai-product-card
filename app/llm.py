@@ -11,17 +11,31 @@ from .config import settings
 
 
 class LLMError(RuntimeError):
-    """Модель недоступна или ответила так, что ответ нельзя использовать."""
+    """Модель недоступна или ответила так, что ответ нельзя использовать.
+
+    retryable=True — модель ответила, но ответ испорчен (оборван, не JSON):
+    имеет смысл спросить ещё раз. Ошибки связи и «модель не найдена» не повторяем.
+    """
+
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
-def chat_json(messages: list[dict], schema: dict) -> dict:
+def chat_json(messages: list[dict], schema: dict, temperature: float | None = None) -> dict:
     """Отправляет диалог в модель и возвращает разобранный JSON-ответ."""
     payload = {
         "model": settings.ollama_model,
         "messages": messages,
         "format": schema,
         "stream": False,
-        "options": {"temperature": settings.llm_temperature, "num_ctx": 8192},
+        "options": {
+            "temperature": settings.llm_temperature if temperature is None else temperature,
+            "num_ctx": 8192,
+            # Потолок длины ответа: нормальная карточка — ~800–1000 токенов. Без потолка
+            # модель иногда «зацикливается» и пишет 15 минут, пока не кончится контекст.
+            "num_predict": 1800,
+        },
     }
     url = f"{settings.ollama_url.rstrip('/')}/api/chat"
     try:
@@ -55,9 +69,10 @@ def chat_json(messages: list[dict], schema: dict) -> dict:
     try:
         data = json.loads(content)
     except json.JSONDecodeError as e:
-        raise LLMError(f"Модель вернула не JSON: {content[:300]}") from e
+        raise LLMError(f"Модель вернула оборванный или некорректный JSON ({len(content)} символов)",
+                       retryable=True) from e
     if not isinstance(data, dict):
-        raise LLMError(f"Модель вернула JSON не того вида: {content[:300]}")
+        raise LLMError("Модель вернула JSON не того вида", retryable=True)
     return data
 
 

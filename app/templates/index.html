@@ -50,9 +50,9 @@
 <main>
   <section>
     <h2>Данные о товаре</h2>
-    <label for="url">Загрузить со страницы souz-pribor.ru (необязательно)</label>
+    <label for="url">Загрузить товар: id из YML-фида или ссылка на souz-pribor.ru (необязательно)</label>
     <div class="row">
-      <input type="url" id="url" placeholder="https://www.souz-pribor.ru/product/mp3-u/">
+      <input type="text" id="url" placeholder="205786 или https://www.souz-pribor.ru/product/mp3-u/">
       <button class="secondary" id="importBtn">Загрузить</button>
     </div>
     <label for="input">JSON: name, manufacturer, specs, description</label>
@@ -109,7 +109,7 @@ document.addEventListener("click", (e) => {
 $("importBtn").onclick = async () => {
   const url = $("url").value.trim();
   if (!url) return;
-  $("status").textContent = "Загружаю страницу…";
+  $("status").textContent = /^\d+$/.test(url) ? "Ищу товар в фиде (первый раз скачивается ~40 МБ)…" : "Загружаю страницу…";
   try {
     const r = await fetch("/api/import", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({url})});
     const d = await r.json();

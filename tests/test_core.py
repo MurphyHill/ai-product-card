@@ -168,7 +168,7 @@ def test_retry_fixes_invented_numbers(monkeypatch):
     ])
     calls = []
 
-    def fake_chat(messages, schema):
+    def fake_chat(messages, schema, **k):
         calls.append(list(messages))
         return next(answers)
 
@@ -184,7 +184,7 @@ def test_llm_failure_on_retry_keeps_best_answer(monkeypatch):
     from app.llm import LLMError
     calls = {"n": 0}
 
-    def flaky(messages, schema):
+    def flaky(messages, schema, **k):
         calls["n"] += 1
         if calls["n"] == 1:
             return _good_answer(commercial_block="IP65")  # есть ошибка → будет повтор
@@ -199,7 +199,7 @@ def test_llm_failure_on_retry_keeps_best_answer(monkeypatch):
 def test_llm_failure_on_first_attempt_is_raised(monkeypatch):
     from app.llm import LLMError
 
-    def down(messages, schema):
+    def down(messages, schema, **k):
         raise LLMError("Ollama недоступна")
 
     monkeypatch.setattr(generator, "chat_json", down)
@@ -208,7 +208,7 @@ def test_llm_failure_on_first_attempt_is_raised(monkeypatch):
 
 
 def test_unfixable_answer_ends_with_warnings(monkeypatch):
-    monkeypatch.setattr(generator, "chat_json", lambda m, s: _good_answer(commercial_block="IP65"))
+    monkeypatch.setattr(generator, "chat_json", lambda m, s, **k: _good_answer(commercial_block="IP65"))
     card = generate_card(MANOMETR)
     assert card.attempts == generator.settings.max_attempts
     assert any("65" in w for w in card.warnings)
@@ -237,7 +237,7 @@ def test_sparse_input_gets_short_honest_text(monkeypatch):
     short = _good_answer(seo_title="Датчик давления ПД-Тест 4–20 мА",
                          seo_description="Датчик давления ПД-Тест с выходным сигналом 4–20 мА.",
                          search_queries=["датчик давления ПД-Тест", "купить датчик ПД-Тест", "датчик 4–20 мА"])
-    monkeypatch.setattr(generator, "chat_json", lambda m, s: short)
+    monkeypatch.setattr(generator, "chat_json", lambda m, s, **k: short)
     card = generate_card(sparse)
     assert card.attempts == 1  # короткий текст при скудных данных — это нормально, не переспрашиваем
     assert "Данных мало" in card.warnings[0]
@@ -246,7 +246,7 @@ def test_sparse_input_gets_short_honest_text(monkeypatch):
 
 
 def test_markdown_shows_no_data(monkeypatch):
-    monkeypatch.setattr(generator, "chat_json", lambda m, s: _good_answer())
+    monkeypatch.setattr(generator, "chat_json", lambda m, s, **k: _good_answer())
     card = generate_card(MANOMETR)
     md = to_markdown(card, MANOMETR)
     assert f"**{NO_DATA}**" in md
@@ -275,7 +275,90 @@ def test_parse_product_page():
     assert "- теплоснабжение" in p.description
 
 
+# ---------- фид и параметры из названия модификации ----------
+
+def test_specs_from_modification_name():
+    from app.validation import specs_from_name
+    p = ProductInput(name="Манометр показывающий Манотомь МП3-У 0 - 100 кгс/см2, кл.т. 1,5")
+    assert specs_from_name(p) == {"диапазон измерений": "0 - 100 кгс/см2", "класс точности": "1,5"}
+    assert not any("диапазон" in m for m in missing_fields(p))
+    specs = build_key_specs(p)
+    assert specs[0].name == "Диапазон измерений (из названия модификации)" and specs[0].from_input
+
+
+def test_codes_in_name_are_not_decoded():
+    from app.validation import specs_from_name
+    # «ДИ0,1-311-1,0» — код модификации; расшифровывать его — домысливание
+    assert specs_from_name(ProductInput(name="Преобразователь давления ОВЕН ПД100-ДИ0,1-311-1,0")) == {}
+
+
+FEED = """<?xml version="1.0" encoding="UTF-8"?><yml_catalog><shop><offers>
+<offer id="1"><name>Другое</name><typePrefix>модем</typePrefix><vendor>ОВЕН</vendor><url>https://www.souz-pribor.ru/product/x/</url></offer>
+<offer id="205786"><name>МП3-У 0 - 100 кгс/см2, кл.т. 1,5</name><typePrefix>манометр показывающий</typePrefix>
+<vendor>Манотомь</vendor><url>https://www.souz-pribor.ru/product/mp3-u/</url></offer>
+</offers></shop></yml_catalog>"""
+
+
+def test_product_from_feed_offer(tmp_path, monkeypatch):
+    from app import feed
+    f = tmp_path / "feed.xml"
+    f.write_text(FEED, encoding="utf-8")
+    monkeypatch.setattr(feed, "fetch_product", lambda url: ProductInput(
+        name="x", specs={"Диаметр корпуса": "100 мм"}, description="Для измерения давления."))
+    p = feed.product_from_offer("205786", feed_file=f)
+    assert p.name == "Манометр показывающий Манотомь МП3-У 0 - 100 кгс/см2, кл.т. 1,5"
+    assert p.manufacturer == "Манотомь"
+    assert p.specs == {"Диаметр корпуса": "100 мм"}
+    assert "205786" in p.source_url
+
+
+def test_unknown_offer(tmp_path):
+    from app import feed
+    from app.importer import ImportError_
+    f = tmp_path / "feed.xml"
+    f.write_text(FEED, encoding="utf-8")
+    with pytest.raises(ImportError_, match="не найден"):
+        feed.find_offer("999", feed_file=f)
+
+
 def test_examples_are_valid_inputs():
     for f in ["01_manometr_mp3u.json", "02_datchik_pd100.json", "03_dm02_iz_zadaniya.json"]:
         p = parse_input(json.loads((EXAMPLES / f).read_text(encoding="utf-8")))
         assert p.name
+
+
+def test_decoded_claim_fix_quotes_sentence_and_raises_temperature(monkeypatch):
+    base = dict(seo_title="Преобразователь давления ОВЕН ПД100",
+                search_queries=["купить ПД100", "преобразователь давления ОВЕН ПД100", "датчик давления для ЖКХ"])
+    answers = iter([
+        _good_answer(**base, commercial_block="Степень защиты IP65 обеспечивает защиту от пыли и воды."),
+        _good_answer(**base, commercial_block="Степень защиты корпуса IP65."),
+    ])
+    seen = []
+
+    def fake_chat(messages, schema, temperature=None):
+        seen.append((list(messages), temperature))
+        return next(answers)
+
+    monkeypatch.setattr(generator, "chat_json", fake_chat)
+    card = generate_card(PD100)
+    assert card.attempts == 2
+    fix_msg = seen[1][0][-1]["content"]
+    assert "«Степень защиты IP65 обеспечивает защиту от пыли и воды.»" in fix_msg
+    assert seen[1][1] > seen[0][1]  # на повторе температура выше
+
+
+def test_broken_model_json_is_retried(monkeypatch):
+    from app.llm import LLMError
+    calls = {"n": 0}
+
+    def flaky(messages, schema, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise LLMError("оборванный JSON", retryable=True)
+        return _good_answer()
+
+    monkeypatch.setattr(generator, "chat_json", flaky)
+    card = generate_card(MANOMETR)
+    assert card.seo_title and calls["n"] == 2
+    assert "оборванный JSON" in card.attempt_log[0]

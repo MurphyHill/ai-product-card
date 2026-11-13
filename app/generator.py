@@ -26,7 +26,7 @@ from .schemas import (
     ProductInput,
     SpecItem,
 )
-from .validation import EXPECTED_SPECS, detect_type, find_spec, is_sparse, missing_fields
+from .validation import EXPECTED_SPECS, detect_type, find_spec, is_sparse, missing_fields, specs_from_name
 
 
 def build_key_specs(product: ProductInput) -> list[SpecItem]:
@@ -37,9 +37,14 @@ def build_key_specs(product: ProductInput) -> list[SpecItem]:
     """
     items: list[SpecItem] = []
     used: set[str] = set()
+    from_name = specs_from_name(product)
     for expected in EXPECTED_SPECS.get(detect_type(product) or "", []):
         key = find_spec(product, expected)
-        if key and key not in used:
+        if expected in from_name:
+            # значение конкретной модификации из названия важнее общего значения по серии
+            items.append(SpecItem(name=f"{expected.capitalize()} (из названия модификации)",
+                                  value=from_name[expected], from_input=True))
+        elif key and key not in used:
             items.append(SpecItem(name=key, value=product.specs[key], from_input=True))
             used.add(key)
         elif not key:
@@ -130,11 +135,24 @@ def check_answer(answer: dict, product: ProductInput, sparse: bool = False) -> l
 
     decoded = decoded_claims(all_text, product)
     if decoded:
+        sentences = _sentences_with(all_text, decoded)
         problems.append(Problem(
             "facts", "Расшифровка кодов, которой нет в данных: " + ", ".join(decoded),
-            "Убери расшифровку кодов (" + ", ".join(decoded) + "): в ДАННЫХ этого нет. "
-            "Пиши просто «степень защиты IP65» без пояснений."))
+            "В ДАННЫХ нет расшифровки кодов защиты, а ты её добавил. Перепиши эти предложения, оставив только "
+            "сам код (например «Степень защиты — IP40, по заказу — IP54.»), без слов о пыли, воде и влаге:\n"
+            + "\n".join(f"  «{s}»" for s in sentences)))
     return problems
+
+
+def _sentences_with(text: str, phrases: list[str]) -> list[str]:
+    """Предложения, в которых встречаются найденные фразы, — чтобы показать модели, что именно исправить."""
+    import re
+
+    out = []
+    for s in re.split(r"(?<=[.!?])\s+|\n+", text):
+        if any(p in s.lower() for p in phrases) and s.strip() not in out:
+            out.append(s.strip())
+    return out
 
 
 def generate_card(product: ProductInput) -> ProductCard:
@@ -151,10 +169,17 @@ def generate_card(product: ProductInput) -> ProductCard:
     attempts = 0
     for attempts in range(1, settings.max_attempts + 1):
         try:
-            raw = chat_json(messages, RESPONSE_SCHEMA)
+            # На повторах чуть повышаем температуру: при одной и той же температуре
+            # модель часто присылает слово в слово тот же ответ и не исправляется.
+            temperature = settings.llm_temperature + 0.2 * (attempts - 1)
+            raw = chat_json(messages, RESPONSE_SCHEMA, temperature=temperature)
         except LLMError as e:
             if best is None:
-                raise  # ни одного ответа — показываем ошибку пользователю
+                if e.retryable and attempts < settings.max_attempts:
+                    # модель ответила, но ответ испорчен (оборван, не JSON) — пробуем ещё раз
+                    log.append(f"попытка {attempts}: {e}")
+                    continue
+                raise  # ни одного годного ответа — показываем ошибку пользователю
             # Ответ уже есть, сломалась только попытка исправления — отдаём лучший вариант.
             log.append(f"попытка {attempts}: ошибка модели ({e}); оставлен лучший из полученных вариантов")
             attempts -= 1

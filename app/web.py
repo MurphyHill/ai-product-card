@@ -4,7 +4,7 @@
 
 - GET  /              — форма для контент-менеджера
 - POST /api/card      — JSON товара → карточка (JSON + Markdown)
-- POST /api/import    — ссылка на товар souz-pribor.ru → входной JSON
+- POST /api/import    — ссылка на товар souz-pribor.ru или id из YML-фида → входной JSON
 - GET  /api/health    — запущена ли Ollama и скачана ли модель
 """
 from pathlib import Path
@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from . import llm
 from .config import settings
+from .feed import product_from_offer
 from .generator import generate_card
 from .importer import ImportError_, fetch_product
 from .llm import LLMError
@@ -57,8 +58,10 @@ class ImportRequest(BaseModel):
 
 @app.post("/api/import")
 def import_product(req: ImportRequest):
+    """Принимает ссылку на товар или id позиции из YML-фида."""
+    value = req.url.strip()
     try:
-        product = fetch_product(req.url)
+        product = product_from_offer(value) if value.isdigit() else fetch_product(value)
     except ImportError_ as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     return product.model_dump(exclude_none=True)

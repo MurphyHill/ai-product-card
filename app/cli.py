@@ -3,6 +3,7 @@
     python -m app.cli examples/input/01_manometr_mp3u.json
     python -m app.cli examples/input/*.json --out examples/output
     python -m app.cli --url https://www.souz-pribor.ru/product/mp3-u/
+    python -m app.cli --offer 205786          # id товара из YML-фида
 
 Для каждого товара сохраняет <имя>.json (структура) и <имя>.md (для копирования).
 """
@@ -12,6 +13,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from .feed import product_from_offer
 from .generator import generate_card
 from .schemas import ProductInput
 from .importer import ImportError_, fetch_product
@@ -24,6 +26,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Черновик карточки товара по данным о приборе")
     ap.add_argument("files", nargs="*", help="JSON-файлы с данными о товарах")
     ap.add_argument("--url", action="append", default=[], help="ссылка на товар souz-pribor.ru")
+    ap.add_argument("--offer", action="append", default=[],
+                    help="id товара из YML-фида souz-pribor.ru (например 205786)")
     ap.add_argument("--out", default="examples/output", help="куда сохранить результат")
     args = ap.parse_args(argv)
     # Консоль Windows по умолчанию не в UTF-8: не падаем на редких символах вроде «≤».
@@ -31,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
 
-    if not args.files and not args.url:
+    if not args.files and not args.url and not args.offer:
         ap.print_help()
         return 2
 
@@ -46,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     for url in args.url:
         slug = url.rstrip("/").rsplit("/", 1)[-1] or "product"
         jobs.append((slug, lambda u=url: fetch_product(u)))
+    for offer_id in args.offer:
+        jobs.append((f"offer_{offer_id}", lambda o=offer_id: product_from_offer(o)))
 
     for stem, load in jobs:
         print(f"- {stem}: ", end="", flush=True)

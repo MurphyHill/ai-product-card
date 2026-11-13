@@ -111,6 +111,27 @@ def find_spec(product: ProductInput, expected: str) -> str | None:
     return None
 
 
+# Диапазон и класс точности часто записаны прямо в названии модификации из фида:
+# «МП3-У 0 - 100 кгс/см2, кл.т. 1,5». Это входные данные, а не догадка, поэтому
+# их можно показать в таблице — с пометкой «из названия».
+# Коды вроде «ПД100-ДИ0,1-311-1,0» НЕ расшифровываем: это было бы домысливание.
+_UNIT = r"(?:кгс/см2|кгс/см²|мпа|кпа|па|бар|bar|°c|°с|мм\s*вод\.?\s*ст\.?)"
+_NAME_PATTERNS = {
+    "диапазон измерений": re.compile(
+        rf"(-?\d+(?:[.,]\d+)?\s*(?:-|–|…|\.\.\.)\s*\d+(?:[.,]\d+)?\s*{_UNIT})", re.I),
+    "класс точности": re.compile(r"(?:кл\.?\s*т\.?|класс\s+точности)\s*(\d+(?:[.,]\d+)?)", re.I),
+}
+
+
+def specs_from_name(product: ProductInput) -> dict[str, str]:
+    found = {}
+    for spec, rx in _NAME_PATTERNS.items():
+        m = rx.search(product.name)
+        if m:
+            found[spec] = re.sub(r"\s+", " ", m.group(1)).strip()
+    return found
+
+
 def missing_fields(product: ProductInput) -> list[str]:
     """Список того, чего не хватает для хорошей карточки."""
     missing = []
@@ -121,8 +142,9 @@ def missing_fields(product: ProductInput) -> list[str]:
     if len(product.description) < 50:
         missing.append("описание (description) — пусто или слишком короткое")
     ptype = detect_type(product)
+    from_name = specs_from_name(product)
     for expected in EXPECTED_SPECS.get(ptype or "", []):
-        if find_spec(product, expected) is None:
+        if find_spec(product, expected) is None and expected not in from_name:
             missing.append(f"характеристика «{expected}»")
     return missing
 
